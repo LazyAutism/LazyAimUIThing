@@ -1,0 +1,435 @@
+--========================================================--
+--===================== LAZYAIM UI =======================--
+--======================== v1.0.6 =======================--
+--========================================================--
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+local mouse = player:GetMouse()
+
+--========================================================--
+--==================== FILE SYSTEM =======================--
+--========================================================--
+
+local FS_AVAILABLE = writefile and readfile and isfile and makefolder
+local FOLDER = "LazyAim"
+local FILE = FOLDER .. "/settings.json"
+
+local function saveSettings(tbl)
+	if not FS_AVAILABLE then return end
+	if not isfolder(FOLDER) then makefolder(FOLDER) end
+	writefile(FILE, HttpService:JSONEncode(tbl))
+end
+
+local function loadSettings()
+	if not FS_AVAILABLE or not isfile(FILE) then return nil end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(readfile(FILE))
+	end)
+	return ok and data or nil
+end
+
+--========================================================--
+--======================= GUI ============================--
+--========================================================--
+
+local gui = Instance.new("ScreenGui")
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = player:WaitForChild("PlayerGui")
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 260, 0, 260)
+frame.Position = UDim2.new(0, 20, 0, 20)
+frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+
+--========================================================--
+--===================== TITLE BAR ========================--
+--========================================================--
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -40, 0, 40)
+title.Text = "LazyAim"
+title.TextColor3 = Color3.fromRGB(255, 0, 0)
+title.BackgroundTransparency = 1
+title.TextScaled = true
+title.Font = Enum.Font.Fantasy
+title.Parent = frame
+
+local gear = Instance.new("TextButton")
+gear.Size = UDim2.new(0, 32, 0, 32)
+gear.Position = UDim2.new(1, -36, 0, 4)
+gear.Text = "⚙"
+gear.TextScaled = true
+gear.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+gear.TextColor3 = Color3.fromRGB(255, 0, 0)
+gear.Parent = frame
+Instance.new("UICorner", gear).CornerRadius = UDim.new(1, 0)
+
+--========================================================--
+--======================= TABS ===========================--
+--========================================================--
+
+local mainTab = Instance.new("ScrollingFrame")
+local settingsTab = Instance.new("ScrollingFrame")
+
+for _, tab in ipairs({ mainTab, settingsTab }) do
+	tab.Size = UDim2.new(1, 0, 0, 180)
+	tab.Position = UDim2.new(0, 0, 0, 40)
+	tab.ScrollBarThickness = 6
+	tab.BackgroundTransparency = 1
+	tab.CanvasSize = UDim2.new(0, 0, 0, 0)
+	tab.Parent = frame
+end
+settingsTab.Visible = false
+
+local function setupLayout(tab)
+	local list = Instance.new("UIListLayout", tab)
+	list.Padding = UDim.new(0, 8)
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+	local pad = Instance.new("UIPadding", tab)
+	pad.PaddingTop = UDim.new(0, 10)
+	pad.PaddingBottom = UDim.new(0, 40)
+
+	list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		tab.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 20)
+	end)
+end
+
+setupLayout(mainTab)
+setupLayout(settingsTab)
+
+--========================================================--
+--==================== BUTTON FACTORY ====================--
+--========================================================--
+
+local function createButton(parent, text)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0.9, 0, 0, 50)
+	btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	btn.TextColor3 = Color3.fromRGB(80, 0, 0)
+	btn.TextSize = 20
+	btn.Font = Enum.Font.FredokaOne
+	btn.Text = text
+	btn.Parent = parent
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+	return btn
+end
+
+--========================================================--
+--==================== MAIN TAB ==========================--
+--========================================================--
+
+local bindEnabled = true
+local toggleBindBtn = createButton(mainTab, "Toggle Bind: ON")
+local modeBtn = createButton(mainTab, "direct mode")
+local aimLocBtn = createButton(mainTab, "aim: head")
+
+--========================================================--
+--==================== SETTINGS TAB ======================--
+--========================================================--
+
+local aimBindBtn = createButton(settingsTab, "Aimlock Bind: T")
+local uiBindBtn = createButton(settingsTab, "UI Bind: RightCtrl")
+local filterBtn = createButton(settingsTab, "Target Filter: All")
+local autoRelockBtn = createButton(settingsTab, "Auto relock: OFF")
+local unloadBtn = createButton(settingsTab, "Unload Script")
+
+--========================================================--
+--===================== STATE ============================--
+--========================================================--
+
+local aimBind = Enum.KeyCode.T
+local uiBind = Enum.KeyCode.RightControl
+local waitingFor = nil
+local aimHead = true
+local autoRelock = false
+
+local modes = { "direct mode", "nearest mode(cursor)", "nearest mode" }
+local modeIndex = 1
+
+local filters = {
+	"All",
+	"Players",
+	"Enemy team only",
+	"Ally team only",
+	"NPCs"
+}
+local filterIndex = 1
+
+local lockEnabled = false
+local lockedPart = nil
+local deathConn, ancestryConn
+
+--========================================================--
+--==================== LOAD SETTINGS =====================--
+--========================================================--
+
+local saved = loadSettings()
+if saved then
+	if saved.aimBind then aimBind = Enum.KeyCode[saved.aimBind] end
+	if saved.uiBind then uiBind = Enum.KeyCode[saved.uiBind] end
+	if saved.modeIndex then modeIndex = saved.modeIndex end
+	if saved.aimHead ~= nil then aimHead = saved.aimHead end
+	if saved.bindEnabled ~= nil then bindEnabled = saved.bindEnabled end
+	if saved.autoRelock ~= nil then autoRelock = saved.autoRelock end
+	if saved.filterIndex then filterIndex = saved.filterIndex end
+end
+
+modeBtn.Text = modes[modeIndex]
+aimLocBtn.Text = aimHead and "aim: head" or "aim: center"
+toggleBindBtn.Text = bindEnabled and "Toggle Bind: ON" or "Toggle Bind: OFF"
+aimBindBtn.Text = "Aimlock Bind: " .. aimBind.Name
+uiBindBtn.Text = "UI Bind: " .. uiBind.Name
+autoRelockBtn.Text = autoRelock and "Auto relock: ON" or "Auto relock: OFF"
+filterBtn.Text = "Target Filter: " .. filters[filterIndex]
+
+local function persist()
+	saveSettings({
+		aimBind = aimBind.Name,
+		uiBind = uiBind.Name,
+		modeIndex = modeIndex,
+		aimHead = aimHead,
+		bindEnabled = bindEnabled,
+		autoRelock = autoRelock,
+		filterIndex = filterIndex
+	})
+end
+
+--========================================================--
+--===================== AIM LOGIC ========================--
+--========================================================--
+
+local function clearLock()
+	lockEnabled = false
+	lockedPart = nil
+	if deathConn then deathConn:Disconnect() deathConn = nil end
+	if ancestryConn then ancestryConn:Disconnect() ancestryConn = nil end
+end
+
+local function getAimPart(model)
+	if aimHead then
+		return model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart")
+	end
+	return model:FindFirstChild("HumanoidRootPart")
+end
+
+local function isPlayerModel(model)
+	return Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function validModel(model)
+	if not model:IsA("Model") then return false end
+	if model.Name == player.Name then return false end
+
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return false end
+
+	local isPlayer = isPlayerModel(model)
+	local targetPlayer = isPlayer and Players:GetPlayerFromCharacter(model)
+
+	if filterIndex == 2 and not isPlayer then return false end
+	if filterIndex == 3 and (not isPlayer or targetPlayer.Team == player.Team) then return false end
+	if filterIndex == 4 and (not isPlayer or targetPlayer.Team ~= player.Team) then return false end
+	if filterIndex == 5 and isPlayer then return false end
+
+	return true
+end
+
+local function findTarget(forceMode)
+	local best, bestDist = nil, math.huge
+	local useMode = forceMode or modeIndex
+
+	for _, model in ipairs(workspace:GetDescendants()) do
+		if validModel(model) then
+			local part = getAimPart(model)
+			if part then
+				if useMode == 1 then
+					if mouse.Target and mouse.Target:IsDescendantOf(model) then
+						return part
+					end
+				elseif useMode == 2 then
+					local sp, on = Camera:WorldToScreenPoint(part.Position)
+					if on then
+						local d = (Vector2.new(sp.X, sp.Y) - Vector2.new(mouse.X, mouse.Y)).Magnitude
+						if d < bestDist then bestDist, best = d, part end
+					end
+				elseif useMode == 3 and player.Character then
+					local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+					if hrp then
+						local d = (part.Position - hrp.Position).Magnitude
+						if d < bestDist then bestDist, best = d, part end
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local spawnWatcherConn
+local function watchForSpawn()
+	if spawnWatcherConn then return end
+	spawnWatcherConn = RunService.Stepped:Connect(function()
+		if not lockEnabled and autoRelock then
+			local nextTarget = findTarget()
+			if nextTarget then
+				lock(nextTarget)
+			end
+		end
+	end)
+end
+
+local function lock(part)
+	if not part then return end
+	clearLock()
+	lockedPart = part
+	lockEnabled = true
+
+	local hum = part.Parent:FindFirstChildOfClass("Humanoid")
+	if hum then
+		deathConn = hum.Died:Connect(function()
+			clearLock()
+			if autoRelock then
+				local fallback = (modeIndex == 1) and 2 or modeIndex
+				local nextTarget = findTarget(fallback)
+				if nextTarget then
+					lock(nextTarget)
+				else
+					watchForSpawn()
+				end
+			end
+		end)
+	end
+
+	ancestryConn = part.AncestryChanged:Connect(function(_, parent)
+		if not parent then clearLock() end
+	end)
+end
+
+--========================================================--
+--===================== INPUT ============================--
+--========================================================--
+
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+
+	if waitingFor then
+		if input.KeyCode ~= Enum.KeyCode.Unknown then
+			if waitingFor == "aim" then
+				aimBind = input.KeyCode
+				aimBindBtn.Text = "Aimlock Bind: " .. aimBind.Name
+			else
+				uiBind = input.KeyCode
+				uiBindBtn.Text = "UI Bind: " .. uiBind.Name
+			end
+			waitingFor = nil
+			persist()
+		end
+		return
+	end
+
+	if input.KeyCode == aimBind and bindEnabled then
+		if lockEnabled then
+			clearLock()
+		else
+			lock(findTarget())
+		end
+	end
+
+	if input.KeyCode == uiBind then
+		frame.Visible = not frame.Visible
+	end
+end)
+
+RunService.RenderStepped:Connect(function()
+	if lockEnabled and lockedPart then
+		Camera.CFrame = CFrame.new(Camera.CFrame.Position, lockedPart.Position)
+	end
+end)
+
+--========================================================--
+--===================== BUTTONS ==========================--
+--========================================================--
+
+aimBindBtn.MouseButton1Click:Connect(function()
+	waitingFor = "aim"
+	aimBindBtn.Text = "Press a key..."
+end)
+
+uiBindBtn.MouseButton1Click:Connect(function()
+	waitingFor = "ui"
+	uiBindBtn.Text = "Press a key..."
+end)
+
+toggleBindBtn.MouseButton1Click:Connect(function()
+	bindEnabled = not bindEnabled
+	toggleBindBtn.Text = bindEnabled and "Toggle Bind: ON" or "Toggle Bind: OFF"
+	persist()
+end)
+
+modeBtn.MouseButton1Click:Connect(function()
+	modeIndex = modeIndex % #modes + 1
+	modeBtn.Text = modes[modeIndex]
+	persist()
+end)
+
+aimLocBtn.MouseButton1Click:Connect(function()
+	aimHead = not aimHead
+	aimLocBtn.Text = aimHead and "aim: head" or "aim: center"
+	persist()
+end)
+
+filterBtn.MouseButton1Click:Connect(function()
+	filterIndex = filterIndex % #filters + 1
+	filterBtn.Text = "Target Filter: " .. filters[filterIndex]
+	persist()
+end)
+
+autoRelockBtn.MouseButton1Click:Connect(function()
+	autoRelock = not autoRelock
+	autoRelockBtn.Text = autoRelock and "Auto relock: ON" or "Auto relock: OFF"
+	persist()
+end)
+
+gear.MouseButton1Click:Connect(function()
+	mainTab.Visible = not mainTab.Visible
+	settingsTab.Visible = not settingsTab.Visible
+end)
+
+unloadBtn.MouseButton1Click:Connect(function()
+	persist()
+	clearLock()
+	if spawnWatcherConn then spawnWatcherConn:Disconnect() spawnWatcherConn = nil end
+	gui:Destroy()
+end)
+
+--========================================================--
+--===================== VERSION ==========================--
+--========================================================--
+
+local ver = Instance.new("TextLabel")
+ver.Size = UDim2.new(1, 0, 0, 20)
+ver.Position = UDim2.new(0, 0, 1, -20)
+ver.BackgroundTransparency = 1
+ver.TextScaled = true
+ver.Font = Enum.Font.Arcade
+ver.Text = "v1.0.6"
+ver.Parent = frame
+
+local h = 0
+RunService.RenderStepped:Connect(function()
+	h = (h + 0.005) % 1
+	ver.TextColor3 = Color3.fromHSV(h, 1, 1)
+end)
