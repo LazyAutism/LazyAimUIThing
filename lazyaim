@@ -1,6 +1,6 @@
 --========================================================--
 --===================== LAZYAIM UI =======================--
---======================== v1.0.7 =======================--
+--======================== v1.0.8 =======================--
 --========================================================--
 
 local Players = game:GetService("Players")
@@ -40,7 +40,7 @@ end
 --========================================================--
 
 local whitelist = {}
-local whitelistMode = "None" 
+local whitelistMode = "None"
 local aimBind = Enum.KeyCode.T
 local uiBind = Enum.KeyCode.RightControl
 local waitingFor = nil
@@ -52,12 +52,32 @@ local lockedPart = nil
 local modeIndex = 1
 local filterIndex = 1
 local deathConn, ancestryConn
-local saveModes = { "On Change", "Timed: 5s", "Timed: 10s", "Timed: 30s" }
-local saveModeIndex = 1
-local lastSaveTime = tick()
+local highlightEnabled = false
+local highlightStyle = 1 -- 1=Full, 2=Outline only, 3=Fill only
+local highlightStyles = { "Full", "Outline Only", "Fill Only" }
+local hideAnimation = true
+local introEnabled = true
+local uiVisible = true
 
 local modes = { "direct mode", "nearest mode(cursor)", "nearest mode" }
 local filters = { "All", "Players", "Enemy team only", "Ally team only", "NPCs" }
+
+-- Changelog for v1.0.8
+local changelog = {
+    "v1.0.8",
+    "- Added this changelog button",
+    "- Fixed nearest-to-cursor & direct",
+    "  modes breaking with shiftlock /",
+    "  first person / mouse lock",
+    "- Removed save modes; now always",
+    "  saves on setting change",
+    "- Added highlight target option",
+    "  (full / outline / fill modes)",
+    "- UI now renders over all other",
+    "  UIs including Roblox core UI",
+    "- Added hide animation toggle",
+    "- Added intro animation toggle",
+}
 
 local function isWhitelisted(targetPlayer)
     if not targetPlayer then return false end
@@ -71,17 +91,28 @@ end
 --======================= GUI SETUP ======================--
 --========================================================--
 
-local gui = Instance.new("ScreenGui")
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.DisplayOrder = 2147483647 
-gui.Parent = player:WaitForChild("PlayerGui")
+-- Parent to CoreGui so it renders above ALL other UIs including Roblox's core UI
+local gui
+local ok = pcall(function()
+    gui = Instance.new("ScreenGui")
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 2147483647
+    gui.Parent = game:GetService("CoreGui")
+end)
+if not ok then
+    gui = Instance.new("ScreenGui")
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 2147483647
+    gui.Parent = player:WaitForChild("PlayerGui")
+end
 
 local frame = Instance.new("Frame")
 frame.Size = UDim2.new(0, 260, 0, 260)
-frame.Position = UDim2.new(0.5, -130, 0.5, -130) 
+frame.Position = UDim2.new(0, 20, 0, 20)
 frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-frame.BackgroundTransparency = 1 
+frame.BackgroundTransparency = 1
 frame.Active = true
 frame.Draggable = true
 frame.Parent = gui
@@ -95,8 +126,8 @@ content.Parent = frame
 
 -- Title & Splash Elements
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 50)
-title.Position = UDim2.new(0, 0, 0.35, 0)
+title.Size = UDim2.new(1, -45, 0, 45)
+title.Position = UDim2.new(0, 5, 0, 0)
 title.Text = "LazyAim"
 title.TextColor3 = Color3.fromRGB(255, 0, 0)
 title.BackgroundTransparency = 1
@@ -117,12 +148,12 @@ subTitle.TextTransparency = 1
 subTitle.Parent = frame
 
 local ver = Instance.new("TextLabel")
-ver.Size = UDim2.new(0.8, 0, 0, 60)
-ver.Position = UDim2.new(0.1, 0, 0.4, 0)
+ver.Size = UDim2.new(1, 0, 0, 25)
+ver.Position = UDim2.new(0, 0, 1, -25)
 ver.BackgroundTransparency = 1
-ver.Text = "v1.0.7"
+ver.Text = "v1.0.8"
 ver.Font = Enum.Font.Arcade
-ver.TextScaled = true 
+ver.TextScaled = true
 ver.TextColor3 = Color3.fromRGB(255, 0, 0)
 ver.TextTransparency = 1
 ver.Parent = frame
@@ -181,17 +212,100 @@ gear.TextColor3 = Color3.fromRGB(255, 0, 0)
 gear.Parent = content
 Instance.new("UICorner", gear).CornerRadius = UDim.new(1, 0)
 
+-- Changelog button (top left)
+local changelogBtn = Instance.new("TextButton")
+changelogBtn.Size = UDim2.new(0, 32, 0, 32)
+changelogBtn.Position = UDim2.new(0, 4, 0, 4)
+changelogBtn.Text = "📋"
+changelogBtn.TextScaled = true
+changelogBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+changelogBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
+changelogBtn.Parent = content
+Instance.new("UICorner", changelogBtn).CornerRadius = UDim.new(1, 0)
+
+-- Main tab buttons
 local toggleBindBtn = createButton(mainTab, "Toggle Bind: ON")
 local modeBtn = createButton(mainTab, "direct mode")
 local aimLocBtn = createButton(mainTab, "aim: head")
+local highlightBtn = createButton(mainTab, "Highlight Target: OFF")
+local highlightStyleBtn = createButton(mainTab, "Style: Full")
+highlightStyleBtn.Visible = false
+highlightStyleBtn.Size = UDim2.new(0.75, 0, 0, 35)
 
+-- Settings tab buttons
 local whitelistBtn = createButton(settingsTab, "Whitelist")
-local saveModeBtn = createButton(settingsTab, "Save Mode")
 local aimBindBtn = createButton(settingsTab, "Aimlock Bind: T")
 local uiBindBtn = createButton(settingsTab, "UI Bind: RightCtrl")
 local filterBtn = createButton(settingsTab, "Target Filter: All")
 local autoRelockBtn = createButton(settingsTab, "Auto relock: OFF")
+local hideAnimBtn = createButton(settingsTab, "Hide Animation: ON")
+local introAnimBtn = createButton(settingsTab, "Intro Animation: ON")
 local unloadBtn = createButton(settingsTab, "Unload Script")
+
+--========================================================--
+--================= CHANGELOG PANEL UI ==================--
+--========================================================--
+
+local changelogFrame = Instance.new("Frame")
+changelogFrame.Size = UDim2.new(0, 200, 0, 220)
+changelogFrame.Position = UDim2.new(1, 5, 0, 0)
+changelogFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+changelogFrame.Visible = false
+changelogFrame.Parent = frame
+Instance.new("UICorner", changelogFrame)
+
+local clTitle = Instance.new("TextLabel")
+clTitle.Size = UDim2.new(1, -30, 0, 28)
+clTitle.Position = UDim2.new(0, 5, 0, 2)
+clTitle.Text = "Changelog"
+clTitle.TextColor3 = Color3.fromRGB(200, 0, 0)
+clTitle.BackgroundTransparency = 1
+clTitle.TextScaled = true
+clTitle.Font = Enum.Font.FredokaOne
+clTitle.Parent = changelogFrame
+
+local closeClBtn = Instance.new("TextButton")
+closeClBtn.Size = UDim2.new(0, 28, 0, 28)
+closeClBtn.Position = UDim2.new(1, -30, 0, 2)
+closeClBtn.Text = "X"
+closeClBtn.TextColor3 = Color3.new(1, 0, 0)
+closeClBtn.BackgroundTransparency = 1
+closeClBtn.Font = Enum.Font.FredokaOne
+closeClBtn.TextScaled = true
+closeClBtn.Parent = changelogFrame
+
+local clScroll = Instance.new("ScrollingFrame")
+clScroll.Size = UDim2.new(1, -8, 1, -35)
+clScroll.Position = UDim2.new(0, 4, 0, 33)
+clScroll.BackgroundTransparency = 1
+clScroll.ScrollBarThickness = 2
+clScroll.Parent = changelogFrame
+
+local clLayout = Instance.new("UIListLayout", clScroll)
+clLayout.Padding = UDim.new(0, 2)
+clLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    clScroll.CanvasSize = UDim2.new(0, 0, 0, clLayout.AbsoluteContentSize.Y + 8)
+end)
+
+for _, line in ipairs(changelog) do
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 18)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = line
+    lbl.TextColor3 = (line:sub(1,1) == "v") and Color3.fromRGB(255, 80, 80) or Color3.fromRGB(180, 180, 180)
+    lbl.TextSize = 11
+    lbl.Font = Enum.Font.Code
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.TextWrapped = true
+    lbl.Parent = clScroll
+end
+
+changelogBtn.MouseButton1Click:Connect(function()
+    changelogFrame.Visible = not changelogFrame.Visible
+end)
+closeClBtn.MouseButton1Click:Connect(function()
+    changelogFrame.Visible = false
+end)
 
 --========================================================--
 --================= WHITELIST PANEL UI ===================--
@@ -209,7 +323,7 @@ local closeWl = Instance.new("TextButton")
 closeWl.Size = UDim2.new(0, 30, 0, 30)
 closeWl.Position = UDim2.new(1, -30, 0, 0)
 closeWl.Text = "X"
-closeWl.TextColor3 = Color3.new(1,0,0)
+closeWl.TextColor3 = Color3.new(1, 0, 0)
 closeWl.BackgroundTransparency = 1
 closeWl.Parent = whitelistFrame
 
@@ -233,6 +347,38 @@ nfToggle.Text = "Non-Friends"
 nfToggle.Parent = whitelistFrame
 
 --========================================================--
+--==================== HIGHLIGHT =======================--
+--========================================================--
+
+local activeHighlight = nil
+
+local function applyHighlight(model)
+    if activeHighlight then
+        activeHighlight:Destroy()
+        activeHighlight = nil
+    end
+    if not highlightEnabled or not model then return end
+    local hl = Instance.new("SelectionBox")
+    hl.Adornee = model
+    hl.Color3 = Color3.fromRGB(255, 0, 0)
+    hl.LineThickness = 0.05
+    hl.SurfaceTransparency = (highlightStyle == 2) and 1 or 0.5
+    hl.SurfaceColor3 = Color3.fromRGB(255, 0, 0)
+    if highlightStyle == 3 then
+        hl.LineThickness = 0
+    end
+    hl.Parent = gui
+    activeHighlight = hl
+end
+
+local function clearHighlight()
+    if activeHighlight then
+        activeHighlight:Destroy()
+        activeHighlight = nil
+    end
+end
+
+--========================================================--
 --==================== PERSISTENCE =======================--
 --========================================================--
 
@@ -246,24 +392,12 @@ local function persist()
         autoRelock = autoRelock,
         filterIndex = filterIndex,
         whitelistMode = whitelistMode,
-        saveModeIndex = saveModeIndex
+        highlightEnabled = highlightEnabled,
+        highlightStyle = highlightStyle,
+        hideAnimation = hideAnimation,
+        introEnabled = introEnabled,
     })
 end
-
-local function attemptSave()
-    if saveModeIndex == 1 then persist() end
-end
-
--- Timed Loop
-task.spawn(function()
-    while task.wait(1) do
-        local interval = ({0, 5, 10, 30})[saveModeIndex] or 0
-        if interval > 0 and (tick() - lastSaveTime) >= interval then
-            persist()
-            lastSaveTime = tick()
-        end
-    end
-end)
 
 local saved = loadSettings()
 if saved then
@@ -275,10 +409,13 @@ if saved then
     if saved.autoRelock ~= nil then autoRelock = saved.autoRelock end
     if saved.filterIndex then filterIndex = saved.filterIndex end
     if saved.whitelistMode then whitelistMode = saved.whitelistMode end
-    if saved.saveModeIndex then saveModeIndex = saved.saveModeIndex end
+    if saved.highlightEnabled ~= nil then highlightEnabled = saved.highlightEnabled end
+    if saved.highlightStyle then highlightStyle = saved.highlightStyle end
+    if saved.hideAnimation ~= nil then hideAnimation = saved.hideAnimation end
+    if saved.introEnabled ~= nil then introEnabled = saved.introEnabled end
 end
 
--- Update UI
+-- Update UI from loaded settings
 modeBtn.Text = modes[modeIndex]
 aimLocBtn.Text = aimHead and "aim: head" or "aim: center"
 toggleBindBtn.Text = bindEnabled and "Toggle Bind: ON" or "Toggle Bind: OFF"
@@ -286,7 +423,11 @@ aimBindBtn.Text = "Aimlock Bind: " .. aimBind.Name
 uiBindBtn.Text = "UI Bind: " .. uiBind.Name
 autoRelockBtn.Text = autoRelock and "Auto relock: ON" or "Auto relock: OFF"
 filterBtn.Text = "Target Filter: " .. filters[filterIndex]
-saveModeBtn.Text = "Save: " .. saveModes[saveModeIndex]
+highlightBtn.Text = "Highlight Target: " .. (highlightEnabled and "ON" or "OFF")
+highlightStyleBtn.Text = "Style: " .. highlightStyles[highlightStyle]
+highlightStyleBtn.Visible = highlightEnabled
+hideAnimBtn.Text = "Hide Animation: " .. (hideAnimation and "ON" or "OFF")
+introAnimBtn.Text = "Intro Animation: " .. (introEnabled and "ON" or "OFF")
 
 --========================================================--
 --===================== AIM LOGIC ========================--
@@ -295,6 +436,7 @@ saveModeBtn.Text = "Save: " .. saveModes[saveModeIndex]
 local function clearLock()
     lockEnabled = false
     lockedPart = nil
+    clearHighlight()
     if deathConn then deathConn:Disconnect() deathConn = nil end
     if ancestryConn then ancestryConn:Disconnect() ancestryConn = nil end
 end
@@ -322,6 +464,23 @@ local function validModel(model)
     return true
 end
 
+-- Fix for shiftlock/first person/mouse lock: use ViewportPointToRay and screen center
+local function getScreenCenter()
+    local vp = Camera.ViewportSize
+    return Vector2.new(vp.X / 2, vp.Y / 2)
+end
+
+local function getMouseScreenPos()
+    -- UIS:GetMouseLocation() works correctly even in shiftlock/first person,
+    -- whereas mouse.X/Y can be locked to center in those modes.
+    return UIS:GetMouseLocation()
+end
+
+local function worldToScreen(pos)
+    local sp, onScreen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(sp.X, sp.Y), onScreen
+end
+
 local function findTarget(forceMode)
     local best, bestDist = nil, math.huge
     local useMode = forceMode or modeIndex
@@ -330,11 +489,19 @@ local function findTarget(forceMode)
             local part = getAimPart(model)
             if part then
                 if useMode == 1 then
-                    if mouse.Target and mouse.Target:IsDescendantOf(model) then return part end
+                    -- Direct mode: use ray from camera through screen center (fixes mouse lock)
+                    local ray = Camera:ViewportPointToRay(getMouseScreenPos().X, getMouseScreenPos().Y)
+                    local result = workspace:Raycast(ray.Origin, ray.Direction * 1000)
+                    if result and result.Instance and result.Instance:IsDescendantOf(model) then
+                        return part
+                    end
                 elseif useMode == 2 then
-                    local sp, _ = Camera:WorldToScreenPoint(part.Position)
-                    local d = (Vector2.new(sp.X, sp.Y) - UIS:GetMouseLocation()).Magnitude
-                    if d < bestDist then bestDist, best = d, part end
+                    -- Nearest to cursor: use ViewportPoint instead of mouse.X/Y
+                    local sp, onScreen = worldToScreen(part.Position)
+                    if onScreen then
+                        local d = (sp - getMouseScreenPos()).Magnitude
+                        if d < bestDist then bestDist, best = d, part end
+                    end
                 elseif useMode == 3 and player.Character then
                     local hrp = player.Character:FindFirstChild("HumanoidRootPart")
                     if hrp then
@@ -353,6 +520,7 @@ local function lock(part)
     clearLock()
     lockedPart = part
     lockEnabled = true
+    applyHighlight(part.Parent)
     local hum = part.Parent:FindFirstChildOfClass("Humanoid")
     if hum then
         deathConn = hum.Died:Connect(function()
@@ -363,7 +531,41 @@ local function lock(part)
             end
         end)
     end
-    ancestryConn = part.AncestryChanged:Connect(function(_, p) if not p then clearLock() end end)
+    ancestryConn = part.AncestryChanged:Connect(function(_, p)
+        if not p then clearLock() end
+    end)
+end
+
+--========================================================--
+--=================== UI SHOW/HIDE =======================--
+--========================================================--
+
+local frameHomePos = UDim2.new(0, 20, 0, 20)
+
+local function showUI()
+    uiVisible = true
+    frame.Visible = true
+    if hideAnimation then
+        frame.Position = UDim2.new(0, 20, -0.5, 0)
+        TweenService:Create(frame, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Position = frameHomePos
+        }):Play()
+    end
+end
+
+local function hideUI()
+    uiVisible = false
+    if hideAnimation then
+        local tween = TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.new(0, 20, -0.5, 0)
+        })
+        tween:Play()
+        tween.Completed:Connect(function()
+            if not uiVisible then frame.Visible = false end
+        end)
+    else
+        frame.Visible = false
+    end
 end
 
 --========================================================--
@@ -371,28 +573,61 @@ end
 --========================================================--
 
 task.spawn(function()
-    TweenService:Create(frame, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
-    task.wait(0.5)
-    TweenService:Create(title, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-    task.wait(0.3)
-    TweenService:Create(subTitle, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-    task.wait(1)
-    TweenService:Create(subTitle, TweenInfo.new(0.3), {TextTransparency = 1}):Play()
-    task.wait(0.3)
-    TweenService:Create(ver, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
-    task.wait(0.8)
-    
-    TweenService:Create(title, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {Position = UDim2.new(0, 5, 0, 0), Size = UDim2.new(1, -45, 0, 45)}):Play()
-    TweenService:Create(ver, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {Position = UDim2.new(0, 0, 1, -25), Size = UDim2.new(1, 0, 0, 25)}):Play()
-    TweenService:Create(frame, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {Position = UDim2.new(0, 20, 0, 20)}):Play()
-    task.wait(0.8)
-    
+    if introEnabled then
+        -- Full intro animation
+        frame.BackgroundTransparency = 1
+        frame.Position = UDim2.new(0.5, -130, 0.5, -130)
+        title.TextTransparency = 1
+        subTitle.TextTransparency = 1
+        ver.TextTransparency = 1
+        title.Position = UDim2.new(0, 5, 0.35, 0)
+        title.Size = UDim2.new(1, 0, 0, 50)
+        ver.Position = UDim2.new(0.1, 0, 0.4, 0)
+        ver.Size = UDim2.new(0.8, 0, 0, 60)
+
+        TweenService:Create(frame, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
+        task.wait(0.5)
+        TweenService:Create(title, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+        task.wait(0.3)
+        TweenService:Create(subTitle, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+        task.wait(1)
+        TweenService:Create(subTitle, TweenInfo.new(0.3), {TextTransparency = 1}):Play()
+        task.wait(0.3)
+        TweenService:Create(ver, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+        task.wait(0.8)
+
+        TweenService:Create(title, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {
+            Position = UDim2.new(0, 5, 0, 0),
+            Size = UDim2.new(1, -45, 0, 45)
+        }):Play()
+        TweenService:Create(ver, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {
+            Position = UDim2.new(0, 0, 1, -25),
+            Size = UDim2.new(1, 0, 0, 25)
+        }):Play()
+        TweenService:Create(frame, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {
+            Position = frameHomePos
+        }):Play()
+        task.wait(0.8)
+    else
+        -- Skip intro: snap straight to final state
+        frame.BackgroundTransparency = 0
+        frame.Position = frameHomePos
+        title.TextTransparency = 0
+        title.Position = UDim2.new(0, 5, 0, 0)
+        title.Size = UDim2.new(1, -45, 0, 45)
+        ver.TextTransparency = 0
+        ver.Position = UDim2.new(0, 0, 1, -25)
+        ver.Size = UDim2.new(1, 0, 0, 25)
+        subTitle.TextTransparency = 1
+    end
+
     content.Visible = true
+
     local h = 0
     RunService.RenderStepped:Connect(function()
         h = (h + 0.005) % 1
         ver.TextColor3 = Color3.fromHSV(h, 1, 1)
-        if lockEnabled and lockedPart then
+        if lockEnabled and lockedPart and lockedPart.Parent then
             Camera.CFrame = CFrame.new(Camera.CFrame.Position, lockedPart.Position)
         end
     end)
@@ -406,32 +641,115 @@ UIS.InputBegan:Connect(function(input, gp)
     if gp then return end
     if waitingFor then
         if input.KeyCode ~= Enum.KeyCode.Unknown then
-            if waitingFor == "aim" then aimBind = input.KeyCode aimBindBtn.Text = "Aimlock Bind: "..aimBind.Name
-            else uiBind = input.KeyCode uiBindBtn.Text = "UI Bind: "..uiBind.Name end
-            waitingFor = nil attemptSave()
+            if waitingFor == "aim" then
+                aimBind = input.KeyCode
+                aimBindBtn.Text = "Aimlock Bind: " .. aimBind.Name
+            else
+                uiBind = input.KeyCode
+                uiBindBtn.Text = "UI Bind: " .. uiBind.Name
+            end
+            waitingFor = nil
+            persist()
         end
         return
     end
     if input.KeyCode == aimBind and bindEnabled then
         if lockEnabled then clearLock() else lock(findTarget()) end
     end
-    if input.KeyCode == uiBind then frame.Visible = not frame.Visible end
+    if input.KeyCode == uiBind then
+        if uiVisible then hideUI() else showUI() end
+    end
 end)
 
-gear.MouseButton1Click:Connect(function() mainTab.Visible = not mainTab.Visible settingsTab.Visible = not settingsTab.Visible end)
-modeBtn.MouseButton1Click:Connect(function() modeIndex = modeIndex % #modes + 1 modeBtn.Text = modes[modeIndex] attemptSave() end)
-aimLocBtn.MouseButton1Click:Connect(function() aimHead = not aimHead aimLocBtn.Text = aimHead and "aim: head" or "aim: center" attemptSave() end)
-toggleBindBtn.MouseButton1Click:Connect(function() bindEnabled = not bindEnabled toggleBindBtn.Text = bindEnabled and "Toggle Bind: ON" or "Toggle Bind: OFF" attemptSave() end)
-filterBtn.MouseButton1Click:Connect(function() filterIndex = filterIndex % #filters + 1 filterBtn.Text = "Target Filter: "..filters[filterIndex] attemptSave() end)
-autoRelockBtn.MouseButton1Click:Connect(function() autoRelock = not autoRelock autoRelockBtn.Text = autoRelock and "Auto relock: ON" or "Auto relock: OFF" attemptSave() end)
-aimBindBtn.MouseButton1Click:Connect(function() waitingFor = "aim" aimBindBtn.Text = "Press a key..." end)
-uiBindBtn.MouseButton1Click:Connect(function() waitingFor = "ui" uiBindBtn.Text = "Press a key..." end)
-saveModeBtn.MouseButton1Click:Connect(function() saveModeIndex = saveModeIndex % #saveModes + 1 saveModeBtn.Text = "Save: "..saveModes[saveModeIndex] persist() end)
-unloadBtn.MouseButton1Click:Connect(function() persist() clearLock() gui:Destroy() end)
+gear.MouseButton1Click:Connect(function()
+    mainTab.Visible = not mainTab.Visible
+    settingsTab.Visible = not settingsTab.Visible
+end)
+
+modeBtn.MouseButton1Click:Connect(function()
+    modeIndex = modeIndex % #modes + 1
+    modeBtn.Text = modes[modeIndex]
+    persist()
+end)
+
+aimLocBtn.MouseButton1Click:Connect(function()
+    aimHead = not aimHead
+    aimLocBtn.Text = aimHead and "aim: head" or "aim: center"
+    persist()
+end)
+
+toggleBindBtn.MouseButton1Click:Connect(function()
+    bindEnabled = not bindEnabled
+    toggleBindBtn.Text = bindEnabled and "Toggle Bind: ON" or "Toggle Bind: OFF"
+    persist()
+end)
+
+highlightBtn.MouseButton1Click:Connect(function()
+    highlightEnabled = not highlightEnabled
+    highlightBtn.Text = "Highlight Target: " .. (highlightEnabled and "ON" or "OFF")
+    highlightStyleBtn.Visible = highlightEnabled
+    if highlightEnabled and lockedPart and lockedPart.Parent then
+        applyHighlight(lockedPart.Parent)
+    else
+        clearHighlight()
+    end
+    persist()
+end)
+
+highlightStyleBtn.MouseButton1Click:Connect(function()
+    highlightStyle = highlightStyle % #highlightStyles + 1
+    highlightStyleBtn.Text = "Style: " .. highlightStyles[highlightStyle]
+    if highlightEnabled and lockedPart and lockedPart.Parent then
+        applyHighlight(lockedPart.Parent)
+    end
+    persist()
+end)
+
+filterBtn.MouseButton1Click:Connect(function()
+    filterIndex = filterIndex % #filters + 1
+    filterBtn.Text = "Target Filter: " .. filters[filterIndex]
+    persist()
+end)
+
+autoRelockBtn.MouseButton1Click:Connect(function()
+    autoRelock = not autoRelock
+    autoRelockBtn.Text = autoRelock and "Auto relock: ON" or "Auto relock: OFF"
+    persist()
+end)
+
+hideAnimBtn.MouseButton1Click:Connect(function()
+    hideAnimation = not hideAnimation
+    hideAnimBtn.Text = "Hide Animation: " .. (hideAnimation and "ON" or "OFF")
+    persist()
+end)
+
+introAnimBtn.MouseButton1Click:Connect(function()
+    introEnabled = not introEnabled
+    introAnimBtn.Text = "Intro Animation: " .. (introEnabled and "ON" or "OFF")
+    persist()
+end)
+
+aimBindBtn.MouseButton1Click:Connect(function()
+    waitingFor = "aim"
+    aimBindBtn.Text = "Press a key..."
+end)
+
+uiBindBtn.MouseButton1Click:Connect(function()
+    waitingFor = "ui"
+    uiBindBtn.Text = "Press a key..."
+end)
+
+unloadBtn.MouseButton1Click:Connect(function()
+    persist()
+    clearLock()
+    gui:Destroy()
+end)
 
 -- Whitelist Panel
 local function updateWhitelistUI()
-    for _, v in ipairs(wlList:GetChildren()) do if v:IsA("TextButton") then v:Destroy() end end
+    for _, v in ipairs(wlList:GetChildren()) do
+        if v:IsA("TextButton") then v:Destroy() end
+    end
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= player then
             local pBtn = createButton(wlList, p.Name)
@@ -444,7 +762,22 @@ local function updateWhitelistUI()
         end
     end
 end
-fToggle.MouseButton1Click:Connect(function() whitelistMode = (whitelistMode == "Friends") and "None" or "Friends" attemptSave() end)
-nfToggle.MouseButton1Click:Connect(function() whitelistMode = (whitelistMode == "Non-Friends") and "None" or "Non-Friends" attemptSave() end)
-whitelistBtn.MouseButton1Click:Connect(function() whitelistFrame.Visible = not whitelistFrame.Visible if whitelistFrame.Visible then updateWhitelistUI() end end)
-closeWl.MouseButton1Click:Connect(function() whitelistFrame.Visible = false end)
+
+fToggle.MouseButton1Click:Connect(function()
+    whitelistMode = (whitelistMode == "Friends") and "None" or "Friends"
+    persist()
+end)
+
+nfToggle.MouseButton1Click:Connect(function()
+    whitelistMode = (whitelistMode == "Non-Friends") and "None" or "Non-Friends"
+    persist()
+end)
+
+whitelistBtn.MouseButton1Click:Connect(function()
+    whitelistFrame.Visible = not whitelistFrame.Visible
+    if whitelistFrame.Visible then updateWhitelistUI() end
+end)
+
+closeWl.MouseButton1Click:Connect(function()
+    whitelistFrame.Visible = false
+end)
