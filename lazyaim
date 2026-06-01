@@ -1,6 +1,6 @@
 --========================================================--
 --===================== LAZYAIM UI =======================--
---======================== v1.0.8 =======================--
+--======================== v1.0.9.5 =====================--
 --========================================================--
 
 local Players = game:GetService("Players")
@@ -51,30 +51,52 @@ local lockEnabled = false
 local lockedPart = nil
 local modeIndex = 1
 local filterIndex = 1
-local deathConn, ancestryConn
+local deathConn, ancestryConn, healthConn
 local highlightEnabled = false
-local highlightStyle = 1 -- 1=Full, 2=Outline only, 3=Fill only
+local highlightStyle = 1
 local highlightStyles = { "Full", "Outline Only", "Fill Only" }
 local hideAnimation = true
 local introEnabled = true
 local uiVisible = true
+local preferDirect = false
+-- preferDirect modes: 1=true direct (no walls, opaque only), 2=direct (transparent/no surface ok)
+local preferDirectMode = 1
+local preferDirectModes = { "true direct", "direct" }
 
-local modes = { "direct mode", "nearest mode(cursor)", "nearest mode" }
+-- Modes: 1=direct, 2=nearest(cursor), 3=nearest, 4=nearest(center)
+local modes = { "direct mode", "nearest(cursor)", "nearest", "nearest(center)" }
 local filters = { "All", "Players", "Enemy team only", "Ally team only", "NPCs" }
 
--- Changelog for v1.0.8
+local unloaded = false
+local renderConn, inputConn
+
+-- Changelog (newest first)
 local changelog = {
+    "v1.0.9.5",
+    "- Fixed aim/lock persisting after",
+    "  unloading the script",
+    "",
+    "v1.0.9",
+    "- Added Prefer Direct toggle",
+    "  (true direct: solid walls only,",
+    "   direct: transparent/no-surface ok)",
+    "- Added nearest(center) lock mode",
+    "- Changelog icon changed to scroll",
+    "- Title centered at top",
+    "- Hide animation slides off top",
+    "  and returns to last position",
+    "- Fixed auto-relock on ragdoll death",
+    "  (health monitor + ancestry watch)",
+    "",
     "v1.0.8",
-    "- Added this changelog button",
-    "- Fixed nearest-to-cursor & direct",
-    "  modes breaking with shiftlock /",
-    "  first person / mouse lock",
-    "- Removed save modes; now always",
-    "  saves on setting change",
+    "- Added changelog button",
+    "- Fixed nearest-cursor & direct",
+    "  modes with shiftlock/first person",
+    "- Removed save modes; always saves",
+    "  on setting change",
     "- Added highlight target option",
     "  (full / outline / fill modes)",
-    "- UI now renders over all other",
-    "  UIs including Roblox core UI",
+    "- UI now renders over all other UIs",
     "- Added hide animation toggle",
     "- Added intro animation toggle",
 }
@@ -91,16 +113,15 @@ end
 --======================= GUI SETUP ======================--
 --========================================================--
 
--- Parent to CoreGui so it renders above ALL other UIs including Roblox's core UI
 local gui
-local ok = pcall(function()
+local coreOk = pcall(function()
     gui = Instance.new("ScreenGui")
     gui.ResetOnSpawn = false
     gui.IgnoreGuiInset = true
     gui.DisplayOrder = 2147483647
     gui.Parent = game:GetService("CoreGui")
 end)
-if not ok then
+if not coreOk then
     gui = Instance.new("ScreenGui")
     gui.ResetOnSpawn = false
     gui.IgnoreGuiInset = true
@@ -124,14 +145,15 @@ content.BackgroundTransparency = 1
 content.Visible = false
 content.Parent = frame
 
--- Title & Splash Elements
+-- Title (centered at top, room for both side buttons)
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -45, 0, 45)
-title.Position = UDim2.new(0, 5, 0, 0)
+title.Size = UDim2.new(1, -80, 0, 45)   -- leave 40px each side for buttons
+title.Position = UDim2.new(0, 40, 0, 0)
 title.Text = "LazyAim"
 title.TextColor3 = Color3.fromRGB(255, 0, 0)
 title.BackgroundTransparency = 1
 title.TextScaled = true
+title.TextXAlignment = Enum.TextXAlignment.Center
 title.Font = Enum.Font.Fantasy
 title.TextTransparency = 1
 title.Parent = frame
@@ -151,7 +173,7 @@ local ver = Instance.new("TextLabel")
 ver.Size = UDim2.new(1, 0, 0, 25)
 ver.Position = UDim2.new(0, 0, 1, -25)
 ver.BackgroundTransparency = 1
-ver.Text = "v1.0.8"
+ver.Text = "v1.0.9.5"
 ver.Font = Enum.Font.Arcade
 ver.TextScaled = true
 ver.TextColor3 = Color3.fromRGB(255, 0, 0)
@@ -202,6 +224,7 @@ end
 --===================== BUTTONS ==========================--
 --========================================================--
 
+-- Gear button (top right)
 local gear = Instance.new("TextButton")
 gear.Size = UDim2.new(0, 32, 0, 32)
 gear.Position = UDim2.new(1, -36, 0, 4)
@@ -212,11 +235,11 @@ gear.TextColor3 = Color3.fromRGB(255, 0, 0)
 gear.Parent = content
 Instance.new("UICorner", gear).CornerRadius = UDim.new(1, 0)
 
--- Changelog button (top left)
+-- Changelog button (top left) — scroll icon
 local changelogBtn = Instance.new("TextButton")
 changelogBtn.Size = UDim2.new(0, 32, 0, 32)
 changelogBtn.Position = UDim2.new(0, 4, 0, 4)
-changelogBtn.Text = "📋"
+changelogBtn.Text = "📜"
 changelogBtn.TextScaled = true
 changelogBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 changelogBtn.TextColor3 = Color3.fromRGB(255, 0, 0)
@@ -224,30 +247,34 @@ changelogBtn.Parent = content
 Instance.new("UICorner", changelogBtn).CornerRadius = UDim.new(1, 0)
 
 -- Main tab buttons
-local toggleBindBtn = createButton(mainTab, "Toggle Bind: ON")
-local modeBtn = createButton(mainTab, "direct mode")
-local aimLocBtn = createButton(mainTab, "aim: head")
-local highlightBtn = createButton(mainTab, "Highlight Target: OFF")
+local toggleBindBtn    = createButton(mainTab, "Toggle Bind: ON")
+local modeBtn          = createButton(mainTab, "direct mode")
+local aimLocBtn        = createButton(mainTab, "aim: head")
+local highlightBtn     = createButton(mainTab, "Highlight Target: OFF")
 local highlightStyleBtn = createButton(mainTab, "Style: Full")
 highlightStyleBtn.Visible = false
 highlightStyleBtn.Size = UDim2.new(0.75, 0, 0, 35)
+local preferDirectBtn      = createButton(mainTab, "Prefer Direct: OFF")
+local preferDirectModeBtn  = createButton(mainTab, "PD Mode: true direct")
+preferDirectModeBtn.Visible = false
+preferDirectModeBtn.Size = UDim2.new(0.75, 0, 0, 35)
 
 -- Settings tab buttons
-local whitelistBtn = createButton(settingsTab, "Whitelist")
-local aimBindBtn = createButton(settingsTab, "Aimlock Bind: T")
-local uiBindBtn = createButton(settingsTab, "UI Bind: RightCtrl")
-local filterBtn = createButton(settingsTab, "Target Filter: All")
+local whitelistBtn  = createButton(settingsTab, "Whitelist")
+local aimBindBtn    = createButton(settingsTab, "Aimlock Bind: T")
+local uiBindBtn     = createButton(settingsTab, "UI Bind: RightCtrl")
+local filterBtn     = createButton(settingsTab, "Target Filter: All")
 local autoRelockBtn = createButton(settingsTab, "Auto relock: OFF")
-local hideAnimBtn = createButton(settingsTab, "Hide Animation: ON")
-local introAnimBtn = createButton(settingsTab, "Intro Animation: ON")
-local unloadBtn = createButton(settingsTab, "Unload Script")
+local hideAnimBtn   = createButton(settingsTab, "Hide Animation: ON")
+local introAnimBtn  = createButton(settingsTab, "Intro Animation: ON")
+local unloadBtn     = createButton(settingsTab, "Unload Script")
 
 --========================================================--
 --================= CHANGELOG PANEL UI ==================--
 --========================================================--
 
 local changelogFrame = Instance.new("Frame")
-changelogFrame.Size = UDim2.new(0, 200, 0, 220)
+changelogFrame.Size = UDim2.new(0, 210, 0, 240)
 changelogFrame.Position = UDim2.new(1, 5, 0, 0)
 changelogFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
 changelogFrame.Visible = false
@@ -289,7 +316,7 @@ end)
 
 for _, line in ipairs(changelog) do
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 18)
+    lbl.Size = UDim2.new(1, 0, 0, 16)
     lbl.BackgroundTransparency = 1
     lbl.Text = line
     lbl.TextColor3 = (line:sub(1,1) == "v") and Color3.fromRGB(255, 80, 80) or Color3.fromRGB(180, 180, 180)
@@ -302,10 +329,9 @@ end
 
 changelogBtn.MouseButton1Click:Connect(function()
     changelogFrame.Visible = not changelogFrame.Visible
+    if changelogFrame.Visible then whitelistFrame.Visible = false end
 end)
-closeClBtn.MouseButton1Click:Connect(function()
-    changelogFrame.Visible = false
-end)
+closeClBtn.MouseButton1Click:Connect(function() changelogFrame.Visible = false end)
 
 --========================================================--
 --================= WHITELIST PANEL UI ===================--
@@ -332,7 +358,7 @@ wlList.Size = UDim2.new(1, -10, 1, -70)
 wlList.Position = UDim2.new(0, 5, 0, 30)
 wlList.BackgroundTransparency = 1
 wlList.Parent = whitelistFrame
-local wlLayout = Instance.new("UIListLayout", wlList)
+Instance.new("UIListLayout", wlList)
 
 local fToggle = Instance.new("TextButton")
 fToggle.Size = UDim2.new(0.5, 0, 0, 35)
@@ -353,29 +379,20 @@ nfToggle.Parent = whitelistFrame
 local activeHighlight = nil
 
 local function applyHighlight(model)
-    if activeHighlight then
-        activeHighlight:Destroy()
-        activeHighlight = nil
-    end
+    if activeHighlight then activeHighlight:Destroy() activeHighlight = nil end
     if not highlightEnabled or not model then return end
     local hl = Instance.new("SelectionBox")
     hl.Adornee = model
     hl.Color3 = Color3.fromRGB(255, 0, 0)
-    hl.LineThickness = 0.05
-    hl.SurfaceTransparency = (highlightStyle == 2) and 1 or 0.5
+    hl.LineThickness = highlightStyle == 3 and 0 or 0.05
+    hl.SurfaceTransparency = highlightStyle == 2 and 1 or 0.5
     hl.SurfaceColor3 = Color3.fromRGB(255, 0, 0)
-    if highlightStyle == 3 then
-        hl.LineThickness = 0
-    end
     hl.Parent = gui
     activeHighlight = hl
 end
 
 local function clearHighlight()
-    if activeHighlight then
-        activeHighlight:Destroy()
-        activeHighlight = nil
-    end
+    if activeHighlight then activeHighlight:Destroy() activeHighlight = nil end
 end
 
 --========================================================--
@@ -396,6 +413,8 @@ local function persist()
         highlightStyle = highlightStyle,
         hideAnimation = hideAnimation,
         introEnabled = introEnabled,
+        preferDirect = preferDirect,
+        preferDirectMode = preferDirectMode,
     })
 end
 
@@ -413,9 +432,11 @@ if saved then
     if saved.highlightStyle then highlightStyle = saved.highlightStyle end
     if saved.hideAnimation ~= nil then hideAnimation = saved.hideAnimation end
     if saved.introEnabled ~= nil then introEnabled = saved.introEnabled end
+    if saved.preferDirect ~= nil then preferDirect = saved.preferDirect end
+    if saved.preferDirectMode then preferDirectMode = saved.preferDirectMode end
 end
 
--- Update UI from loaded settings
+-- Sync UI to loaded settings
 modeBtn.Text = modes[modeIndex]
 aimLocBtn.Text = aimHead and "aim: head" or "aim: center"
 toggleBindBtn.Text = bindEnabled and "Toggle Bind: ON" or "Toggle Bind: OFF"
@@ -428,6 +449,9 @@ highlightStyleBtn.Text = "Style: " .. highlightStyles[highlightStyle]
 highlightStyleBtn.Visible = highlightEnabled
 hideAnimBtn.Text = "Hide Animation: " .. (hideAnimation and "ON" or "OFF")
 introAnimBtn.Text = "Intro Animation: " .. (introEnabled and "ON" or "OFF")
+preferDirectBtn.Text = "Prefer Direct: " .. (preferDirect and "ON" or "OFF")
+preferDirectModeBtn.Text = "PD Mode: " .. preferDirectModes[preferDirectMode]
+preferDirectModeBtn.Visible = preferDirect
 
 --========================================================--
 --===================== AIM LOGIC ========================--
@@ -439,6 +463,7 @@ local function clearLock()
     clearHighlight()
     if deathConn then deathConn:Disconnect() deathConn = nil end
     if ancestryConn then ancestryConn:Disconnect() ancestryConn = nil end
+    if healthConn then healthConn:Disconnect() healthConn = nil end
 end
 
 local function getAimPart(model)
@@ -452,10 +477,8 @@ local function validModel(model)
     if not model:IsA("Model") or model.Name == player.Name then return false end
     local targetPlayer = Players:GetPlayerFromCharacter(model)
     if isWhitelisted(targetPlayer) then return false end
-
     local hum = model:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
-
     local isPlayer = (targetPlayer ~= nil)
     if filterIndex == 2 and not isPlayer then return false end
     if filterIndex == 3 and (not isPlayer or targetPlayer.Team == player.Team) then return false end
@@ -464,15 +487,7 @@ local function validModel(model)
     return true
 end
 
--- Fix for shiftlock/first person/mouse lock: use ViewportPointToRay and screen center
-local function getScreenCenter()
-    local vp = Camera.ViewportSize
-    return Vector2.new(vp.X / 2, vp.Y / 2)
-end
-
 local function getMouseScreenPos()
-    -- UIS:GetMouseLocation() works correctly even in shiftlock/first person,
-    -- whereas mouse.X/Y can be locked to center in those modes.
     return UIS:GetMouseLocation()
 end
 
@@ -481,58 +496,153 @@ local function worldToScreen(pos)
     return Vector2.new(sp.X, sp.Y), onScreen
 end
 
+-- Wall check: returns true if there is a clear line of sight from camera to part
+-- mode 1 = true direct: solid/opaque walls block (CanCollide must be true and transparency < 0.5)
+-- mode 2 = direct: only fully opaque non-transparent parts block (transparency == 0 and CanCollide)
+local function hasLineOfSight(part)
+    if not player.Character then return false end
+    local origin = Camera.CFrame.Position
+    local direction = (part.Position - origin)
+    local dist = direction.Magnitude
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = { player.Character, Camera }
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local result = workspace:Raycast(origin, direction.Unit * dist * 0.98, params)
+    if not result then return true end -- nothing in the way
+    local hit = result.Instance
+    if preferDirectMode == 1 then
+        -- true direct: any collidable part blocks
+        return not (hit and hit.CanCollide and hit.Transparency < 0.5)
+    else
+        -- direct: only fully opaque collidable parts block
+        return not (hit and hit.CanCollide and hit.Transparency == 0)
+    end
+end
+
 local function findTarget(forceMode)
     local best, bestDist = nil, math.huge
     local useMode = forceMode or modeIndex
+    local candidates = {}
+
     for _, model in ipairs(workspace:GetDescendants()) do
         if validModel(model) then
             local part = getAimPart(model)
             if part then
-                if useMode == 1 then
-                    -- Direct mode: use ray from camera through screen center (fixes mouse lock)
-                    local ray = Camera:ViewportPointToRay(getMouseScreenPos().X, getMouseScreenPos().Y)
-                    local result = workspace:Raycast(ray.Origin, ray.Direction * 1000)
-                    if result and result.Instance and result.Instance:IsDescendantOf(model) then
-                        return part
-                    end
-                elseif useMode == 2 then
-                    -- Nearest to cursor: use ViewportPoint instead of mouse.X/Y
-                    local sp, onScreen = worldToScreen(part.Position)
-                    if onScreen then
-                        local d = (sp - getMouseScreenPos()).Magnitude
-                        if d < bestDist then bestDist, best = d, part end
-                    end
-                elseif useMode == 3 and player.Character then
-                    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-                    if hrp then
-                        local d = (part.Position - hrp.Position).Magnitude
-                        if d < bestDist then bestDist, best = d, part end
-                    end
-                end
+                table.insert(candidates, { part = part, model = model })
             end
         end
     end
-    return best
+
+    -- If preferDirect is on, partition into visible and non-visible
+    local visibleCandidates, hiddenCandidates = {}, {}
+    if preferDirect then
+        for _, c in ipairs(candidates) do
+            if hasLineOfSight(c.part) then
+                table.insert(visibleCandidates, c)
+            else
+                table.insert(hiddenCandidates, c)
+            end
+        end
+    else
+        visibleCandidates = candidates
+    end
+
+    local function searchList(list)
+        local found = nil
+        local foundDist = math.huge
+        for _, c in ipairs(list) do
+            local part = c.part
+            if useMode == 1 then
+                -- Direct mode: raycast from camera through mouse cursor
+                local mpos = getMouseScreenPos()
+                local ray = Camera:ViewportPointToRay(mpos.X, mpos.Y)
+                local rparams = RaycastParams.new()
+                if player.Character then rparams.FilterDescendantsInstances = { player.Character } end
+                rparams.FilterType = Enum.RaycastFilterType.Exclude
+                local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, rparams)
+                if result and result.Instance and result.Instance:IsDescendantOf(c.model) then
+                    return part
+                end
+            elseif useMode == 2 then
+                -- Nearest to cursor
+                local sp, onScreen = worldToScreen(part.Position)
+                if onScreen then
+                    local d = (sp - getMouseScreenPos()).Magnitude
+                    if d < foundDist then foundDist, found = d, part end
+                end
+            elseif useMode == 3 then
+                -- Nearest (distance from player)
+                if player.Character then
+                    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local d = (part.Position - hrp.Position).Magnitude
+                        if d < foundDist then foundDist, found = d, part end
+                    end
+                end
+            elseif useMode == 4 then
+                -- Nearest to screen center
+                local sp, onScreen = worldToScreen(part.Position)
+                if onScreen then
+                    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    local d = (sp - center).Magnitude
+                    if d < foundDist then foundDist, found = d, part end
+                end
+            end
+        end
+        return found
+    end
+
+    -- Try visible first, fall back to hidden if preferDirect is on
+    local result = searchList(visibleCandidates)
+    if not result and preferDirect and #hiddenCandidates > 0 then
+        result = searchList(hiddenCandidates)
+    end
+    return result
 end
 
-local function lock(part)
+-- Auto-relock helper: waits a tick then tries to find new target
+local function doAutoRelock()
+    if not autoRelock then return end
+    task.defer(function()
+        local nextT = findTarget(2)
+        if nextT then lock(nextT) end
+    end)
+end
+
+-- Forward declare lock so clearLock can reference it if needed via doAutoRelock
+function lock(part)
     if not part then return end
     clearLock()
     lockedPart = part
     lockEnabled = true
     applyHighlight(part.Parent)
-    local hum = part.Parent:FindFirstChildOfClass("Humanoid")
+
+    local model = part.Parent
+    local hum = model:FindFirstChildOfClass("Humanoid")
+
     if hum then
+        -- Primary: Died event
         deathConn = hum.Died:Connect(function()
             clearLock()
-            if autoRelock then
-                local nextT = findTarget(2)
-                if nextT then lock(nextT) end
+            doAutoRelock()
+        end)
+        -- Secondary: Health monitor — catches ragdoll deaths where Died may fire late/not at all
+        healthConn = hum:GetPropertyChangedSignal("Health"):Connect(function()
+            if hum.Health <= 0 then
+                if deathConn then deathConn:Disconnect() deathConn = nil end
+                if healthConn then healthConn:Disconnect() healthConn = nil end
+                clearLock()
+                doAutoRelock()
             end
         end)
     end
+
+    -- Ancestry watch: catches character removal (respawn, leaving, etc.)
     ancestryConn = part.AncestryChanged:Connect(function(_, p)
-        if not p then clearLock() end
+        if not p then
+            clearLock()
+            doAutoRelock()
+        end
     end)
 end
 
@@ -540,15 +650,23 @@ end
 --=================== UI SHOW/HIDE =======================--
 --========================================================--
 
-local frameHomePos = UDim2.new(0, 20, 0, 20)
+-- Hide animation: slides frame UP off screen, returns to its CURRENT position (not hardcoded)
+local function getOffscreenPos()
+    -- Push the frame completely above the top of the screen
+    local frameH = frame.AbsoluteSize.Y
+    return UDim2.new(
+        frame.Position.X.Scale, frame.Position.X.Offset,
+        0, -(frameH + 20)
+    )
+end
 
 local function showUI()
     uiVisible = true
+    local returnPos = frame.Position -- wherever it currently is (or was)
     frame.Visible = true
     if hideAnimation then
-        frame.Position = UDim2.new(0, 20, -0.5, 0)
         TweenService:Create(frame, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Position = frameHomePos
+            Position = returnPos
         }):Play()
     end
 end
@@ -556,8 +674,9 @@ end
 local function hideUI()
     uiVisible = false
     if hideAnimation then
+        local offPos = getOffscreenPos()
         local tween = TweenService:Create(frame, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-            Position = UDim2.new(0, 20, -0.5, 0)
+            Position = offPos
         })
         tween:Play()
         tween.Completed:Connect(function()
@@ -572,16 +691,18 @@ end
 --=================== STARTUP SEQUENCE ===================--
 --========================================================--
 
+local frameHomePos = UDim2.new(0, 20, 0, 20)
+
 task.spawn(function()
     if introEnabled then
-        -- Full intro animation
         frame.BackgroundTransparency = 1
         frame.Position = UDim2.new(0.5, -130, 0.5, -130)
         title.TextTransparency = 1
         subTitle.TextTransparency = 1
         ver.TextTransparency = 1
-        title.Position = UDim2.new(0, 5, 0.35, 0)
+        -- Intro: title centered in full frame
         title.Size = UDim2.new(1, 0, 0, 50)
+        title.Position = UDim2.new(0, 0, 0.35, 0)
         ver.Position = UDim2.new(0.1, 0, 0.4, 0)
         ver.Size = UDim2.new(0.8, 0, 0, 60)
 
@@ -596,25 +717,25 @@ task.spawn(function()
         TweenService:Create(ver, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
         task.wait(0.8)
 
+        -- Animate title into final centered position (leaving space for corner buttons)
         TweenService:Create(title, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {
-            Position = UDim2.new(0, 5, 0, 0),
-            Size = UDim2.new(1, -45, 0, 45)
+            Position = UDim2.new(0, 40, 0, 0),
+            Size = UDim2.new(1, -80, 0, 45),
         }):Play()
         TweenService:Create(ver, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {
             Position = UDim2.new(0, 0, 1, -25),
-            Size = UDim2.new(1, 0, 0, 25)
+            Size = UDim2.new(1, 0, 0, 25),
         }):Play()
         TweenService:Create(frame, TweenInfo.new(0.8, Enum.EasingStyle.Quart), {
-            Position = frameHomePos
+            Position = frameHomePos,
         }):Play()
         task.wait(0.8)
     else
-        -- Skip intro: snap straight to final state
         frame.BackgroundTransparency = 0
         frame.Position = frameHomePos
         title.TextTransparency = 0
-        title.Position = UDim2.new(0, 5, 0, 0)
-        title.Size = UDim2.new(1, -45, 0, 45)
+        title.Position = UDim2.new(0, 40, 0, 0)
+        title.Size = UDim2.new(1, -80, 0, 45)
         ver.TextTransparency = 0
         ver.Position = UDim2.new(0, 0, 1, -25)
         ver.Size = UDim2.new(1, 0, 0, 25)
@@ -624,7 +745,8 @@ task.spawn(function()
     content.Visible = true
 
     local h = 0
-    RunService.RenderStepped:Connect(function()
+    renderConn = RunService.RenderStepped:Connect(function()
+        if unloaded then renderConn:Disconnect() return end
         h = (h + 0.005) % 1
         ver.TextColor3 = Color3.fromHSV(h, 1, 1)
         if lockEnabled and lockedPart and lockedPart.Parent then
@@ -637,7 +759,7 @@ end)
 --================= INPUT & BUTTON LOGIC =================--
 --========================================================--
 
-UIS.InputBegan:Connect(function(input, gp)
+inputConn = UIS.InputBegan:Connect(function(input, gp)
     if gp then return end
     if waitingFor then
         if input.KeyCode ~= Enum.KeyCode.Unknown then
@@ -705,6 +827,19 @@ highlightStyleBtn.MouseButton1Click:Connect(function()
     persist()
 end)
 
+preferDirectBtn.MouseButton1Click:Connect(function()
+    preferDirect = not preferDirect
+    preferDirectBtn.Text = "Prefer Direct: " .. (preferDirect and "ON" or "OFF")
+    preferDirectModeBtn.Visible = preferDirect
+    persist()
+end)
+
+preferDirectModeBtn.MouseButton1Click:Connect(function()
+    preferDirectMode = preferDirectMode % #preferDirectModes + 1
+    preferDirectModeBtn.Text = "PD Mode: " .. preferDirectModes[preferDirectMode]
+    persist()
+end)
+
 filterBtn.MouseButton1Click:Connect(function()
     filterIndex = filterIndex % #filters + 1
     filterBtn.Text = "Target Filter: " .. filters[filterIndex]
@@ -741,7 +876,10 @@ end)
 
 unloadBtn.MouseButton1Click:Connect(function()
     persist()
+    unloaded = true
     clearLock()
+    if renderConn then renderConn:Disconnect() renderConn = nil end
+    if inputConn then inputConn:Disconnect() inputConn = nil end
     gui:Destroy()
 end)
 
@@ -775,7 +913,10 @@ end)
 
 whitelistBtn.MouseButton1Click:Connect(function()
     whitelistFrame.Visible = not whitelistFrame.Visible
-    if whitelistFrame.Visible then updateWhitelistUI() end
+    if whitelistFrame.Visible then
+        changelogFrame.Visible = false
+        updateWhitelistUI()
+    end
 end)
 
 closeWl.MouseButton1Click:Connect(function()
